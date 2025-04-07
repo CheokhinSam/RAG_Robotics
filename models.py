@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import logging
 import re
 from datetime import datetime
-import psycopg2  # 新增導入
+import psycopg2  
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -93,7 +93,6 @@ def create_vector_store(file_paths, collection_name="rag_collection", chunk_size
     return db
 
 def load_existing_vector_store(collection_name="batch_default"):
-    """載入現有的向量儲存"""
     embeddings = get_embeddings()
     db = PGVector(
         embedding_function=embeddings,
@@ -104,7 +103,6 @@ def load_existing_vector_store(collection_name="batch_default"):
     return db
 
 def get_available_collections():
-    """從資料庫獲取所有集合名稱"""
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -122,19 +120,58 @@ def get_available_collections():
         logger.error(f"Error fetching collections: {str(e)}")
         raise
 
-def retrieve_docs(db, query, k=4):
-    return db.similarity_search(query, k)
+def retrieve_docs(db, query, k=4, expand_context=True):
+    initial_docs = db.similarity_search(query, k=k)
+    if not expand_context:
+        return initial_docs
+    
+    expanded_docs = []
+    for doc in initial_docs:
+        # 假設文檔有 start_index，擴展前後 200 字符的上下文
+        start_index = doc.metadata.get("start_index", 0)
+        original_content = doc.page_content
+        
+        # 模擬從完整文檔中提取更多上下文（需根據實際數據結構調整）
+        expanded_content = f"[Expanded Context] {original_content} [Additional related content]"
+        doc.page_content = expanded_content
+        expanded_docs.append(doc)
+    
+    return expanded_docs
+
+def reformulate_query(query, llm):
+    reformulation_prompt = """
+    You are an expert at reformulating questions to make them clearer and more precise for document retrieval. Given the user query below, provide a reformulated version that is concise, specific, and likely to match relevant content in a research paper. Avoid changing the core meaning.
+
+    User Query: {query}
+    Reformulated Query:
+    """
+    prompt = ChatPromptTemplate.from_template(reformulation_prompt)
+    chain = prompt | llm
+    response = chain.invoke({"query": query})
+    reformulated_query = response.content.strip() if hasattr(response, 'content') else str(response)
+    logger.info(f"Original query: {query} | Reformulated query: {reformulated_query}")
+    return reformulated_query
 
 template = """
-You are an assistant that answers questions. Using the following retrieved information, answer the user question. If you don't know the answer, say that you don't know. Keep the answer concise.
-Question: {question} 
-Context: {context} 
+You are a teaching assistant designed to help students understand concepts clearly. Using the retrieved information, answer the user’s question in a concise, educational way. Explain key points briefly, use examples if helpful, and avoid jargon unless necessary. If the answer isn’t clear from the context, say “I don’t have enough information to answer fully” and suggest what might help. Keep it simple and engaging.
+Question: {question}
+Context: {context}
 Answer:
 """
 
-def question_file(question, documents, memory=None):
-    context = "\n\n".join([doc.page_content for doc in documents])
+def question_file(question, documents=None, memory=None, use_reformulation=True, expand_context=True):
     model = get_llm()
+    
+    if use_reformulation:
+        reformulated_question = reformulate_query(question, model)
+    else:
+        reformulated_question = question
+
+    if documents is None:
+        db = load_existing_vector_store()
+        documents = retrieve_docs(db, reformulated_question, k=4, expand_context=expand_context)
+
+    context = "\n\n".join([doc.page_content for doc in documents])
     prompt = ChatPromptTemplate.from_template(template)
     chain = prompt | model
     
@@ -143,17 +180,14 @@ def question_file(question, documents, memory=None):
         context = f"{previous_context}\n\n{context}"
     
     try:
-        logger.info(f"Invoking Azure GPT-4o with question: {question}")
-        response = chain.invoke({"question": question, "context": context})
+        logger.info(f"Invoking Azure GPT-4o with reformulated question: {reformulated_question}")
+        response = chain.invoke({"question": reformulated_question, "context": context})
         response_content = response.content if hasattr(response, 'content') else str(response)
         
         if memory:
             memory.save_context({"input": question}, {"output": response_content})
         
-        return response_content
+        return response_content, reformulated_question
     except Exception as e:
         logger.error(f"Error with Azure GPT-4o: {str(e)}")
-        if "rate limit" in str(e).lower():
-            raise Exception("Rate limit exceeded. Please try again later.")
-        else:
-            raise Exception(f"Failed to generate answer: {str(e)}")
+        raise

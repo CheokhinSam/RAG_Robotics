@@ -5,7 +5,6 @@ import os
 from datetime import datetime
 import re
 
-# 初始化會話狀態
 if "memory" not in st.session_state:
     st.session_state.memory = models.ConversationBufferMemory()
 if "db" not in st.session_state:
@@ -13,12 +12,11 @@ if "db" not in st.session_state:
 if "collection_priority" not in st.session_state:
     st.session_state.collection_priority = False
 if "current_collection" not in st.session_state:
-    st.session_state.current_collection = "None"  # 儲存當前集合名稱
+    st.session_state.current_collection = "None"  
 
 st.set_page_config(page_title="RAG Q&A System", layout="wide")
 st.title("RAG project")
 
-# 集合選擇
 st.subheader("Select a Collection to Query")
 try:
     collections = models.get_available_collections()
@@ -27,7 +25,7 @@ try:
         if st.button("Load Selected Collection"):
             st.session_state.db = models.load_existing_vector_store(collection_name=selected_collection)
             st.session_state.collection_priority = True
-            st.session_state.current_collection = selected_collection  # 更新當前集合名稱
+            st.session_state.current_collection = selected_collection  
             st.success(f"Loaded collection: {selected_collection}")
     else:
         st.warning("No collections found in the database.")
@@ -48,7 +46,7 @@ with st.sidebar:
     - Embedding Model: azure-text-embedding-3-large
     - Retriever Type: Similarity Search
     """)
-    # 顯示當前集合名稱
+
     st.header("Current Collection")
     st.write(f"**{st.session_state.current_collection}**")
 
@@ -76,7 +74,7 @@ if uploaded_files and not st.session_state.collection_priority:
                 file_paths.append(str(file_path))
 
             st.session_state.db = models.create_vector_store(file_paths, collection_name=collection_name)
-            st.session_state.current_collection = collection_name  # 更新當前集合名稱
+            st.session_state.current_collection = collection_name 
         st.success(f"{len(uploaded_files)} file(s) processed successfully! Collection: {collection_name}")
 
     except Exception as e:
@@ -85,7 +83,6 @@ if uploaded_files and not st.session_state.collection_priority:
 elif uploaded_files and st.session_state.collection_priority:
     st.info("Upload ignored. Using selected collection data.")
 
-# 聊天介面
 st.markdown("<h2 style='text-align: center;'>Teacher Assistant Chatbot</h2>", unsafe_allow_html=True)
 
 if "messages" not in st.session_state:
