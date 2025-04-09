@@ -53,7 +53,7 @@ def get_llm():
         api_key=AZURE_OPENAI_API_KEY,
         azure_endpoint=AZURE_OPENAI_API_BASE,
         api_version="2024-02-15-preview",
-        temperature=0.7
+        temperature=0.3
     )
 
 WORKING_DIR = 'Docs/'
@@ -120,23 +120,51 @@ def get_available_collections():
         logger.error(f"Error fetching collections: {str(e)}")
         raise
 
-def retrieve_docs(db, query, k=4, expand_context=True):
-    initial_docs = db.similarity_search(query, k=k)
-    if not expand_context:
-        return initial_docs
+def rerank_documents(query, docs, llm):
+
+    rerank_prompt = """
+    You are an expert at evaluating document relevance. Given a query and a document, assign a relevance score between 0 and 10, where 0 means completely irrelevant and 10 means highly relevant. Provide only the numeric score as output, nothing else.
+
+    Query: {query}
+    Document: {document}
+    Score:
+    """
+    prompt = ChatPromptTemplate.from_template(rerank_prompt)
+    chain = prompt | llm
+    scored_docs = []
     
-    expanded_docs = []
-    for doc in initial_docs:
-        # 假設文檔有 start_index，擴展前後 200 字符的上下文
-        start_index = doc.metadata.get("start_index", 0)
-        original_content = doc.page_content
-        
-        # 模擬從完整文檔中提取更多上下文（需根據實際數據結構調整）
-        expanded_content = f"[Expanded Context] {original_content} [Additional related content]"
-        doc.page_content = expanded_content
-        expanded_docs.append(doc)
+    for doc in docs:
+        response = chain.invoke({"query": query, "document": doc.page_content})
+        score = float(response.content.strip())  # 假設 LLM 返回純數字
+        scored_docs.append((doc, score))
     
-    return expanded_docs
+    # 按得分降序排序
+    scored_docs.sort(key=lambda x: x[1], reverse=True)
+    return [doc for doc, score in scored_docs]
+
+def retrieve_docs(db, query, k=4, expand_context=True, use_reranking=True):
+    """檢索文檔，支持 reranking 和 content expansion"""
+    initial_k = k * 2 if use_reranking else k
+    initial_docs = db.similarity_search(query, k=initial_k)
+
+    if use_reranking:
+        llm = get_llm()
+        reranked_docs = rerank_documents(query, initial_docs, llm)
+        final_docs = reranked_docs[:k]
+    else:
+        final_docs = initial_docs[:k]
+
+    if expand_context:
+        expanded_docs = []
+        for doc in final_docs:
+            start_index = doc.metadata.get("start_index", 0)
+            original_content = doc.page_content
+            expanded_content = f"[Expanded Context] {original_content} [Additional related content]"
+            doc.page_content = expanded_content
+            expanded_docs.append(doc)
+        return expanded_docs
+    
+    return final_docs
 
 def reformulate_query(query, llm):
     reformulation_prompt = """
@@ -159,7 +187,7 @@ Context: {context}
 Answer:
 """
 
-def question_file(question, documents=None, memory=None, use_reformulation=True, expand_context=True):
+def question_file(question, documents=None, memory=None, use_reformulation=True, expand_context=True, use_reranking=True):
     model = get_llm()
     
     if use_reformulation:
@@ -169,9 +197,9 @@ def question_file(question, documents=None, memory=None, use_reformulation=True,
 
     if documents is None:
         db = load_existing_vector_store()
-        documents = retrieve_docs(db, reformulated_question, k=4, expand_context=expand_context)
+        documents = retrieve_docs(db, reformulated_question, k=4, expand_context=expand_context, use_reranking=use_reranking)
 
-    context = "\n\n".join([doc.page_content for doc in documents])
+    context = "\n".join([doc.page_content for doc in documents])
     prompt = ChatPromptTemplate.from_template(template)
     chain = prompt | model
     
